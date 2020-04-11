@@ -61,7 +61,10 @@ Controller_Old: .res 1
 
 PpuCtrlMid: .res 1
 
-diff: .res 1
+diff:   .res 1
+id:     .res 1
+offset: .res 1
+offsetB: .res 1
 
 .segment "TILES0"
     .incbin "tiles_top.chr"
@@ -204,7 +207,8 @@ RESET:
     stx Sprites+SpriteAttr + (0 * 4)
     lda #$80
     sta Sprites+SpriteTile + (0 * 4)
-    lda #PEAK_A_OFFSET
+    ;lda #PEAK_A_OFFSET
+    lda SpriteOffsetsA+0
     sta Sprites+SpriteX + (0 * 4)
 
     ; 2nd peak
@@ -214,9 +218,21 @@ RESET:
     stx Sprites+SpriteAttr + ((i + 1) * 4)
     lda #$81 + i
     sta Sprites+SpriteTile + ((i + 1) * 4)
-    lda #PEAK_B_OFFSET + (i * 8)
+    ;lda #PEAK_B_OFFSET + (i * 8)
+    lda SpriteOffsetsA+i
     sta Sprites+SpriteX + ((i + 1) * 4)
     .endrepeat
+
+    ; 3rd peak
+;    .repeat 4, i
+;    sty Sprites+SpriteY + ((i + 4) * 4)
+;    stx Sprites+SpriteAttr + ((i + 4) * 4)
+;    lda #$84 + i
+;    sta Sprites+SpriteTile + ((i + 4) * 4)
+;    ;lda #PEAK_B_OFFSET + (i * 8)
+;    lda SpriteOffsetsB+i
+;    sta Sprites+SpriteX + ((i + 4) * 4)
+;    .endrepeat
 
     lda #111
     sta ScanlineA
@@ -444,16 +460,41 @@ WriteAttr:
 
 PEAK_Y_VAL = 103
 
-SpriteOffsets:
-    .byte 122
+SpriteOffsetsA:
+    .byte 112
+    .byte 205
+    .byte 213
+    .byte 221
 
+SpriteOffsetsB:
+    .byte 112
     .byte 205
-    .byte 205
-    .byte 205
-
-    .byte 0 ; ??
+    .byte 213
+    .byte 221
 
 UpdateSprites:
+    lda #0
+    sta id
+
+    lda #0
+    sta offset
+@loop:
+    jsr sp_UpdateA
+
+    inc id
+
+    lda id
+    asl a
+    asl a
+    sta offset
+
+    lda id
+    cmp #4
+    bcc @loop
+    rts
+
+; `id` should contain the sprite ID
+sp_UpdateA:
     ; if on NT0
     ;   if offset > scroll
     ;     draw
@@ -471,20 +512,26 @@ UpdateSprites:
     sec
     sbc ScrollMid+1
     clc
-    adc #PEAK_A_OFFSET
+    ldx id
+    adc SpriteOffsetsA, x
+    ;adc #PEAK_A_OFFSET
     bcc :+
 
     ;
     ; not on screen
     lda #$F0
-    sta Sprites+SpriteY + (0 * 4)
+    ldx offset
+    sta Sprites+SpriteY, x
     rts
 :
-    sta Sprites+SpriteX + (0 * 4)
+    ldx offset
+    sta Sprites+SpriteX, x
     jmp @onScreen
 
 @nt0:
-    lda #PEAK_A_OFFSET
+    ldx id
+    lda SpriteOffsetsA, x
+    ;lda #PEAK_A_OFFSET
     sec
     sbc ScrollMid+1
     bcs :+
@@ -492,70 +539,77 @@ UpdateSprites:
     ;
     ; not on screen
     lda #$F0
-    sta Sprites+SpriteY + (0 * 4)
+    ldx offset
+    sta Sprites+SpriteY, x
     rts 
 
 :
-    sta Sprites+SpriteX + (0 * 4)
+    ldx offset
+    sta Sprites+SpriteX, x
 
 @onScreen:
-    ldy #PEAK_Y_VAL
-    sty Sprites+SpriteY + (0 * 4)
+    lda #PEAK_Y_VAL
+    ldx offset
+    sta Sprites+SpriteY, x
     rts
 
-sp_PeakB:
+sp_UpdateB:
+    ; if on NT0
+    ;   if offset > scroll
+    ;     draw
+    ; if on NT1
+    ;   if scroll > offset 
+    ;     draw
+
     lda ScrollMid+2
     and #$01
-    beq @nt0
+    bne @nt1
 
+    ; if (256 - Scroll) + offset < 256
+    ;  draw
     lda #0
     sec
     sbc ScrollMid+1
-    sta diff
-
-    .repeat 3, i
-    lda diff
     clc
-    adc #PEAK_B_OFFSET + (i * 8)
+    ldx id
+    adc SpriteOffsetsB, x
+    ;adc #PEAK_A_OFFSET
     bcc :+
 
+    ;
+    ; not on screen
     lda #$F0
-    sta Sprites+SpriteY + ((i + 1) * 4)
-    jmp :++
-
+    ldx offset
+    sta Sprites+SpriteY, x
+    rts
 :
-    ; on screen
-    ldy #PEAK_Y_VAL
-    sty Sprites+SpriteY + ((i + 1) * 4)
-    sta Sprites+SpriteX + ((i + 1) * 4)
-:
-    .endrepeat
+    ldx offset
+    sta Sprites+SpriteX, x
+    jmp @onScreen
 
-@nt0:
-    .repeat 3, i
-    lda #PEAK_B_OFFSET + (i * 8)
+@nt1:
+    ldx id
+    lda SpriteOffsetsB, x
     sec
     sbc ScrollMid+1
     bcs :+
+
+    ;
+    ; not on screen
     lda #$F0
-    sta Sprites+SpriteY + ((i + 1) * 4)
-    jmp :++ ; not on screen
+    ldx offset
+    sta Sprites+SpriteY, x
+    rts 
+
 :
-    ldy #PEAK_Y_VAL
-    sty Sprites+SpriteY + ((i + 1) * 4)
-    sta Sprites+SpriteX + ((i + 1) * 4)
-:
-    .endrepeat
+    ldx offset
+    sta Sprites+SpriteX, x
 
+@onScreen:
+    lda #PEAK_Y_VAL
+    ldx offset
+    sta Sprites+SpriteY, x
     rts
-
-sp_PeakC:
-    rts
-
-Div2:
-    .repeat 255, i
-    .byte (i + 1) / 2
-    .endrepeat
 
 ReadControllers:
     lda Controller
