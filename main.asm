@@ -224,15 +224,14 @@ RESET:
     .endrepeat
 
     ; 3rd peak
-;    .repeat 4, i
-;    sty Sprites+SpriteY + ((i + 4) * 4)
-;    stx Sprites+SpriteAttr + ((i + 4) * 4)
-;    lda #$84 + i
-;    sta Sprites+SpriteTile + ((i + 4) * 4)
-;    ;lda #PEAK_B_OFFSET + (i * 8)
-;    lda SpriteOffsetsB+i
-;    sta Sprites+SpriteX + ((i + 4) * 4)
-;    .endrepeat
+    .repeat 4, i
+    sty Sprites+SpriteY + ((i + 4) * 4)
+    stx Sprites+SpriteAttr + ((i + 4) * 4)
+    lda #$84 + i
+    sta Sprites+SpriteTile + ((i + 4) * 4)
+    lda SpriteOffsetsB+i
+    sta Sprites+SpriteX + ((i + 4) * 4)
+    .endrepeat
 
     lda #111
     sta ScanlineA
@@ -467,10 +466,9 @@ SpriteOffsetsA:
     .byte 221
 
 SpriteOffsetsB:
-    .byte 112
-    .byte 205
-    .byte 213
-    .byte 221
+    .repeat 4, i
+    .byte 38 + (i * 8)
+    .endrepeat
 
 UpdateSprites:
     lda #0
@@ -491,6 +489,28 @@ UpdateSprites:
     lda id
     cmp #4
     bcc @loop
+
+    lda #0
+    sta id
+
+    lda #(4*4)
+    sta offset
+@loopB:
+    jsr sp_UpdateB
+
+    inc id
+
+    lda id
+    clc
+    adc #4
+
+    asl a
+    asl a
+    sta offset
+
+    lda id
+    cmp #4
+    bcc @loopB
     rts
 
 ; `id` should contain the sprite ID
@@ -511,12 +531,13 @@ sp_UpdateA:
     lda #0
     sec
     sbc ScrollMid+1
+    beq :+
     clc
     ldx id
     adc SpriteOffsetsA, x
     ;adc #PEAK_A_OFFSET
-    bcc :+
-
+    bcc :++
+:
     ;
     ; not on screen
     lda #$F0
@@ -570,11 +591,13 @@ sp_UpdateB:
     lda #0
     sec
     sbc ScrollMid+1
+    beq :+
     clc
     ldx id
     adc SpriteOffsetsB, x
     ;adc #PEAK_A_OFFSET
-    bcc :+
+    bcc :++
+:
 
     ;
     ; not on screen
