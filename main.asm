@@ -5,7 +5,7 @@
 .include "nes2header.inc"
 
 nes2mapper 4
-nes2prg 512 * 1024
+nes2prg 2 * 8 * 1024
 nes2chr 1 *  8 * 1024
 nes2mirror 'V'
 nes2tv 'N'
@@ -21,6 +21,31 @@ BUTTON_DOWN     = 1 << 2
 BUTTON_LEFT     = 1 << 1
 BUTTON_RIGHT    = 1 << 0
 
+; This is OR'd with the nametable before being
+; written.
+PPU_CTRL_VAL = $88
+
+; Top bank is split in two, bottom bank is split
+; in three.  Bank IDs are lowest common denomitator
+BANK_CLOUDS_A = 0
+BANK_CLOUDS_B = 2
+BANK_MOUNTAIN_A = 4
+BANK_MOUNTAIN_B = 6
+
+; All peak sprites are at the same Y value
+PEAK_Y_VAL = 104
+
+; Ratios for the splits.  These are both relative
+; to the bottom split, not eachother.
+ScrollMid_Ratio = $80
+ScrollTop_Ratio = $40
+
+; Attribute quadrant values
+ATTR_BOTL = %0001_0000
+ATTR_BOTR = %0100_0000
+ATTR_TOPL = %0000_0001
+ATTR_TOPR = %0000_0100
+
 .segment "VECTORS"
     .word NMI
     .word RESET
@@ -28,7 +53,9 @@ BUTTON_RIGHT    = 1 << 0
 
 .segment "ZEROPAGE"
 
+; Counts remaining background tiles to draw.
 DoubleCount: .res 2
+; Points to BG tile data.
 PointerA: .res 2
 
 ; Low byte is fraction
@@ -38,33 +65,40 @@ ScrollTop: .res 3
 ScrollMid: .res 3
 ScrollBot: .res 3
 
-; Sprite peaks
-PEAK_A_OFFSET = 112
-PEAK_B_OFFSET = 205
-PEAK_C_OFFSET = 0; ??
-
 ; Scroll rate for the bottom (fastest) plane.
 ; Derive the others from this. Start at half for each step?
 ScrollRate: .res 2
 
-sleeping: .res 1
+; Left or right
+ScrollDirection: .res 1
 
+; Scanline values for split.
 ScanlineA: .res 1
+ScanlineB: .res 1
 
-ATTR_BOTL = %0001_0000
-ATTR_BOTR = %0100_0000
-ATTR_TOPL = %0000_0001
-ATTR_TOPR = %0000_0100
-
+; For the controller input code
 Controller:     .res 1
 Controller_Old: .res 1
+btnX:           .res 1
+btnY:           .res 1
 
-PpuCtrlMid: .res 1
+; Nametable value written during IRQ
+Irq2000Val: .res 1
 
-diff:   .res 1
+; For the IRQ check
+IrqWait: .res 1
+
+; For the NMI check
+sleeping: .res 1
+
+; Used during the sprite update to differentiate
+; between which nametable the sprite belongs on.
+spriteNtCheck: .res 1
+
+; Id and offset for the current sprite being
+; updated.
 id:     .res 1
 offset: .res 1
-offsetB: .res 1
 
 .segment "TILES0"
     .incbin "tiles_top.chr"
@@ -141,7 +175,7 @@ RESET:
     lda #$00
     sta $2006
 
-    ; Top A
+    ; Top, Nametable 0
     lda Table_TopA_Size
     sta DoubleCount
     lda Table_TopA_Size+1
@@ -154,7 +188,7 @@ RESET:
 
     jsr DrawBg
 
-    ; Bottom A
+    ; Bottom, Nametable 0
     lda Table_BotA_Size
     sta DoubleCount
     lda Table_BotA_Size+1
@@ -173,7 +207,7 @@ RESET:
     lda #$00
     sta $2006
 
-    ; Top B
+    ; Top, Nametable 1
     lda Table_TopB_Size
     sta DoubleCount
     lda Table_TopB_Size+1
@@ -186,7 +220,7 @@ RESET:
 
     jsr DrawBg
 
-    ; Bottom B
+    ; Bottom, Nametable 1
     lda Table_BotB_Size
     sta DoubleCount
     lda Table_BotB_Size+1
@@ -200,85 +234,170 @@ RESET:
     jsr DrawBg
 
     ; Setup sprites
+    ; Only attributes and tiles are set here.  The
+    ; X and Y values are rewritten on every frame.
+    lda #0
+    ; Set all the attributes
+    .repeat 8, i
+    sta Sprites+SpriteAttr + (i * 4)
+    .endrepeat
+
+    ; Using .repeat macros for simplicity
     ; 1st peak
-    ldy #103; Y pos
-    ldx #0  ; attr
-    sty Sprites+SpriteY + (0 * 4)
-    stx Sprites+SpriteAttr + (0 * 4)
-    lda #$80
+    lda #$F0
     sta Sprites+SpriteTile + (0 * 4)
-    ;lda #PEAK_A_OFFSET
-    lda SpriteOffsetsA+0
-    sta Sprites+SpriteX + (0 * 4)
 
     ; 2nd peak
-
     .repeat 3, i
-    sty Sprites+SpriteY + ((i + 1) * 4)
-    stx Sprites+SpriteAttr + ((i + 1) * 4)
-    lda #$81 + i
+    lda #$F1 + i
     sta Sprites+SpriteTile + ((i + 1) * 4)
-    ;lda #PEAK_B_OFFSET + (i * 8)
-    lda SpriteOffsetsA+i
-    sta Sprites+SpriteX + ((i + 1) * 4)
     .endrepeat
 
     ; 3rd peak
     .repeat 4, i
-    sty Sprites+SpriteY + ((i + 4) * 4)
-    stx Sprites+SpriteAttr + ((i + 4) * 4)
-    lda #$84 + i
+    lda #$F4 + i
     sta Sprites+SpriteTile + ((i + 4) * 4)
-    lda SpriteOffsetsB+i
-    sta Sprites+SpriteX + ((i + 4) * 4)
     .endrepeat
 
     lda #111
     sta ScanlineA
+    lda #62
+    sta ScanlineB
 
-    cli
-    lda #$18
-    sta $2001
-    lda #$88
-    sta $2000
-Frame:
-
-    jsr ReadControllers
-
-    lda Controller
-    and #BUTTON_LEFT
-    beq :+
-    ; move left
-    jsr ScrollLeft
-:
-
-    lda Controller
-    and #BUTTON_RIGHT
-    beq :+
-    ; move right
-    jsr ScrollRight
-:
-
-    jsr UpdateSprites
-
-    ; Nametable
     lda ScrollMid+2
     and #$01
 
     ; NMI on and Sprite pattern table
     ora #$98
-    ;sta PpuCtrlMid
-    tax
+    sta Irq2000Val
 
-    ldy ScrollMid + 1
+    cli
+    lda #$98
+    sta $2001
+    lda #$88
+    sta $2000
+Frame:
+
+    ;
+    ;   Split A
+    ;
+
+    ; Setup Mapper
+    lda #$00
+    sta $8000   ; R0
+    lda #BANK_CLOUDS_A
+    sta $8001   ; Clouds top
+
+    lda #$01
+    sta $8000   ; R1
+    lda #BANK_CLOUDS_B
+    sta $8001 ; Clouds bottom (3rd bank)
+
+    ; Setup IRQ scroll value for next frame
+    lda ScrollMid+2
+    and #$01 ; nametable
+
+    ; NMI on and Sprite pattern table
+    ora #PPU_CTRL_VAL
+    sta Irq2000Val
 
     lda ScanlineA
     sta $E001   ; enable IRQ
     sta $C000   ; latch the value
     sta $C001   ; reload value
 
-    ; prep for IRQ
-    ;lda #$80
+    ldx Irq2000Val
+    ldy ScrollMid + 1
+
+    ; Setup IRQ and wait for it
+    lda #1
+    sta IrqWait
+:
+    lda IrqWait
+    bne :-
+
+    ; Wait until the next scanline.  We wait
+    ; because there isn't enough time between the
+    ; IRQ and the next scanline.
+    .repeat 30
+    nop
+    .endrepeat
+
+    ;bit $2002
+
+    sty $2005   ; fine scroll
+    stx $2000   ; nametable
+
+    ; Setup Mapper
+    lda #$00
+    sta $8000   ; R0
+    lda #BANK_MOUNTAIN_A
+    sta $8001   ; Mountain top
+
+    lda #$01
+    sta $8000   ; R1
+    lda #BANK_MOUNTAIN_B
+    sta $8001   ; Mountain bottom
+
+    ;
+    ;   Split B
+    ;
+
+    ; Setup IRQ scroll value for next frame
+    lda ScrollBot+2
+    and #$01 ; nametable
+
+    ; NMI on and Sprite pattern table
+    ora #PPU_CTRL_VAL
+    sta Irq2000Val
+
+    lda ScanlineB
+    sta $E001   ; enable IRQ
+    sta $C000
+    sta $C001
+
+    ldy ScrollBot + 1   ; Fine scroll
+    ldx Irq2000Val
+
+    ldx Irq2000Val
+    lda #1
+    sta IrqWait
+:
+    lda IrqWait
+    bne :-
+
+    ; Apparently we don't need to do the wait
+    ; here like the first split.  Idk.
+
+    bit $2002
+    sty $2005   ; fine scroll
+    stx $2000   ; nametable
+
+; This runs after all the splits
+
+    jsr ReadControllers
+
+    ; Toggle scroll direction when A is pressed
+    lda #BUTTON_A
+    jsr ButtonPressed
+    beq :+
+    lda #$FF
+    eor ScrollDirection
+    sta ScrollDirection
+:
+
+    ; Scroll in the appropriate direction
+    lda ScrollDirection
+    bne :+
+    jsr ScrollRight
+    jmp :++
+:
+    jsr ScrollLeft
+:
+
+    ; Update sprites after all the scroll values
+    ; have been written.
+    jsr UpdateSprites
 
     ; Wait for NMI
     lda #1
@@ -289,20 +408,15 @@ Frame:
     jmp Frame
 
 IRQ:
-    ; Put pattern table swap here
-    ;lda PpuCtrlCache
-    .repeat 46
-    nop
-    .endrepeat
-    sty $2005   ; fine scroll
-    stx $2000   ; nametable
-    ;bit $2002   ; reset latch
-    stx $E000   ; disable IRQ
+    ; Stop waiting for IRQ
+    lda #0
+    sta IrqWait
+    sta $E000   ; disable IRQ
     rti
 
 Palettes:
-    .byte $2C, $20, $10, $00
-    .byte $2C, $21, $11, $19
+    .byte $31, $20, $10, $00
+    .byte $31, $21, $11, $19
 
 NMI:
     bit $2002
@@ -384,18 +498,34 @@ DrawBg:
     rts
 
 ScrollLeft:
-    lda ScrollMid + 1
+    lda ScrollBot + 1
     sec
     sbc #1
-    sta ScrollMid + 1
+    sta ScrollBot + 1
     bcs :+
-    dec ScrollMid + 2   ; inc nametable
+    dec ScrollBot + 2
+:
+
+    ; fractonial
+    lda ScrollMid + 0
+    sec
+    sbc #ScrollMid_Ratio
+    sta ScrollMid + 0
+    bcs :+
+    ; whole
+    lda ScrollMid + 1
+    sbc #0
+    sta ScrollMid + 1
+
+    bcs :+
+    ; nametable
+    dec ScrollMid + 2
 :
 
     ; fractonial
     lda ScrollTop + 0
     sec
-    sbc #$80
+    sbc #ScrollTop_Ratio
     sta ScrollTop + 0
     bcs :+
     ; whole
@@ -410,18 +540,33 @@ ScrollLeft:
     rts
 
 ScrollRight:
-    lda ScrollMid + 1
+    lda ScrollBot + 1
     clc
     adc #1
+    sta ScrollBot + 1
+    bcc :+
+    inc ScrollBot + 2   ; inc nametable
+:
+
+    ; fractional
+    lda ScrollMid + 0
+    clc
+    adc #ScrollMid_Ratio
+    sta ScrollMid + 0
+    bcc :+
+    ; whole
+    lda ScrollMid + 1
+    adc #0
     sta ScrollMid + 1
     bcc :+
-    inc ScrollMid + 2   ; inc nametable
+    ; nametable
+    inc ScrollMid + 2
 :
 
     ; fractional
     lda ScrollTop + 0
     clc
-    adc #$80
+    adc #ScrollTop_Ratio
     sta ScrollTop + 0
     bcc :+
     ; whole
@@ -434,97 +579,93 @@ ScrollRight:
 :
     rts
 
+; The clouds use a different palette than the
+; mountains.  This should be called after the
+; PPU address has been written.
 WriteAttr:
     lda #0
     ldx #$18
-:
+@clouds:
     sta $2007
     dex
-    bne :-
+    bne @clouds
 
     lda #ATTR_BOTL | ATTR_BOTR
     ldx #8
-:
+@transition:
     sta $2007
     dex
-    bne :-
+    bne @transition
 
     lda #$55
     ldx #32
-:
+@mountains:
     sta $2007
     dex
-    bne :-
+    bne @mountains
     rts
 
-PEAK_Y_VAL = 103
-
-SpriteOffsetsA:
-    .byte 112
-    .byte 205
-    .byte 213
-    .byte 221
-
-SpriteOffsetsB:
-    .repeat 4, i
-    .byte 38 + (i * 8)
-    .endrepeat
-
+; Update sprites for both nametables. This is
+; split into two loops for simplicity.
 UpdateSprites:
+; Nametable 0
     lda #0
     sta id
 
     lda #0
     sta offset
 @loop:
-    jsr sp_UpdateA
-
-    inc id
 
     lda id
+    cmp #4
+    bcc @firstNt
+    ldy #1
+    sty spriteNtCheck
+    jmp @next
+@firstNt:
+    ldy #0
+    sty spriteNtCheck
+@next:
+
     asl a
     asl a
     sta offset
 
+    jsr sp_Update
+    inc id
+
     lda id
-    cmp #4
+    cmp #8  ; TODO: remove magic number
     bcc @loop
 
-    lda #0
-    sta id
-
-    lda #(4*4)
-    sta offset
-@loopB:
-    jsr sp_UpdateB
-
-    inc id
-
-    lda id
-    clc
-    adc #4
-
-    asl a
-    asl a
-    sta offset
-
-    lda id
-    cmp #4
-    bcc @loopB
     rts
 
-; `id` should contain the sprite ID
-sp_UpdateA:
+; 'id' should contain the sprite ID
+sp_Update:
     ; if on NT0
     ;   if offset > scroll
     ;     draw
     ; if on NT1
-    ;   if scroll > offset 
+    ;   if scroll > offset
     ;     draw
+
+    ; If Sprite is on the second nametable, invert
+    ; the onscreen check.
+    lda spriteNtCheck
+    bne @secondNt
 
     lda ScrollMid+2
     and #$01
     beq @nt0
+    jmp @nt1
+
+@secondNt:
+    lda ScrollMid+2
+    and #$01
+    beq @nt1
+    jmp @nt0
+
+@nt1:
 
     ; if (256 - Scroll) + offset < 256
     ;  draw
@@ -534,8 +675,7 @@ sp_UpdateA:
     beq :+
     clc
     ldx id
-    adc SpriteOffsetsA, x
-    ;adc #PEAK_A_OFFSET
+    adc SpriteOffsets, x
     bcc :++
 :
     ;
@@ -551,8 +691,7 @@ sp_UpdateA:
 
 @nt0:
     ldx id
-    lda SpriteOffsetsA, x
-    ;lda #PEAK_A_OFFSET
+    lda SpriteOffsets, x
     sec
     sbc ScrollMid+1
     bcs :+
@@ -562,67 +701,7 @@ sp_UpdateA:
     lda #$F0
     ldx offset
     sta Sprites+SpriteY, x
-    rts 
-
-:
-    ldx offset
-    sta Sprites+SpriteX, x
-
-@onScreen:
-    lda #PEAK_Y_VAL
-    ldx offset
-    sta Sprites+SpriteY, x
     rts
-
-sp_UpdateB:
-    ; if on NT0
-    ;   if offset > scroll
-    ;     draw
-    ; if on NT1
-    ;   if scroll > offset 
-    ;     draw
-
-    lda ScrollMid+2
-    and #$01
-    bne @nt1
-
-    ; if (256 - Scroll) + offset < 256
-    ;  draw
-    lda #0
-    sec
-    sbc ScrollMid+1
-    beq :+
-    clc
-    ldx id
-    adc SpriteOffsetsB, x
-    ;adc #PEAK_A_OFFSET
-    bcc :++
-:
-
-    ;
-    ; not on screen
-    lda #$F0
-    ldx offset
-    sta Sprites+SpriteY, x
-    rts
-:
-    ldx offset
-    sta Sprites+SpriteX, x
-    jmp @onScreen
-
-@nt1:
-    ldx id
-    lda SpriteOffsetsB, x
-    sec
-    sbc ScrollMid+1
-    bcs :+
-
-    ;
-    ; not on screen
-    lda #$F0
-    ldx offset
-    sta Sprites+SpriteY, x
-    rts 
 
 :
     ldx offset
@@ -653,6 +732,48 @@ ReadControllers:
     bne @player1
     rts
 
+; Was a button pressed this frame?
+ButtonPressed:
+    sta btnX
+    and Controller
+    sta btnY
+
+    lda Controller_Old
+    and btnX
+
+    cmp btnY
+    bne @btnPress_stb
+
+    ; no button change
+    rts
+
+@btnPress_stb:
+    ; button released
+    lda btnY
+    bne @btnPress_stc
+    rts
+
+@btnPress_stc:
+    ; button pressed
+    lda #1
+    rts
+
+; X offsets
+SpriteOffsets:
+    ; Peak 1
+    .byte 114
+
+    ; Peak 2
+    .byte 205
+    .byte 213
+    .byte 221
+
+    ; Peak 3
+    .repeat 4, i
+    .byte 38 + (i * 8)
+    .endrepeat
+
+; Tile IDs for the top half of the image (clouds)
 Table_TopA_Size = :+
 Table_TopA      = :++
 Table_TopB_Size = :+++
@@ -660,6 +781,7 @@ Table_TopB      = :++++
 
     .include "tiles_top.ids.asm"
 
+; Tile IDs for the bottom half of the image (mountains)
 Table_BotA_Size = :+
 Table_BotA      = :++
 Table_BotB_Size = :+++
@@ -667,66 +789,69 @@ Table_BotB      = :++++
 
     .include "tiles_bot.ids.asm"
 
-.segment "LOW_00"
-.segment "LOW_01"
-.segment "LOW_02"
-.segment "LOW_03"
-.segment "LOW_04"
-.segment "LOW_05"
-.segment "LOW_06"
-.segment "LOW_07"
-.segment "LOW_08"
-.segment "LOW_09"
-.segment "LOW_10"
-.segment "LOW_11"
-.segment "LOW_12"
-.segment "LOW_13"
-.segment "LOW_14"
-.segment "LOW_15"
-.segment "LOW_16"
-.segment "LOW_17"
-.segment "LOW_18"
-.segment "LOW_19"
-.segment "LOW_20"
-.segment "LOW_21"
-.segment "LOW_22"
-.segment "LOW_23"
-.segment "LOW_24"
-.segment "LOW_25"
-.segment "LOW_26"
-.segment "LOW_27"
-.segment "LOW_28"
-.segment "LOW_29"
-.segment "LOW_30"
+; None of these are required, but are supported
+; because we're using MMC3
 
-.segment "HIGH_00"
-.segment "HIGH_01"
-.segment "HIGH_02"
-.segment "HIGH_03"
-.segment "HIGH_04"
-.segment "HIGH_05"
-.segment "HIGH_06"
-.segment "HIGH_07"
-.segment "HIGH_08"
-.segment "HIGH_09"
-.segment "HIGH_10"
-.segment "HIGH_11"
-.segment "HIGH_12"
-.segment "HIGH_13"
-.segment "HIGH_14"
-.segment "HIGH_15"
-.segment "HIGH_16"
-.segment "HIGH_17"
-.segment "HIGH_18"
-.segment "HIGH_19"
-.segment "HIGH_20"
-.segment "HIGH_21"
-.segment "HIGH_22"
-.segment "HIGH_23"
-.segment "HIGH_24"
-.segment "HIGH_25"
-.segment "HIGH_26"
-.segment "HIGH_27"
-.segment "HIGH_28"
-.segment "HIGH_29"
-.segment "HIGH_30"
+;.segment "LOW_00"
+;.segment "LOW_01"
+;.segment "LOW_02"
+;.segment "LOW_03"
+;.segment "LOW_04"
+;.segment "LOW_05"
+;.segment "LOW_06"
+;.segment "LOW_07"
+;.segment "LOW_08"
+;.segment "LOW_09"
+;.segment "LOW_10"
+;.segment "LOW_11"
+;.segment "LOW_12"
+;.segment "LOW_13"
+;.segment "LOW_14"
+;.segment "LOW_15"
+;.segment "LOW_16"
+;.segment "LOW_17"
+;.segment "LOW_18"
+;.segment "LOW_19"
+;.segment "LOW_20"
+;.segment "LOW_21"
+;.segment "LOW_22"
+;.segment "LOW_23"
+;.segment "LOW_24"
+;.segment "LOW_25"
+;.segment "LOW_26"
+;.segment "LOW_27"
+;.segment "LOW_28"
+;.segment "LOW_29"
+;.segment "LOW_30"
+
+;.segment "HIGH_00"
+;.segment "HIGH_01"
+;.segment "HIGH_02"
+;.segment "HIGH_03"
+;.segment "HIGH_04"
+;.segment "HIGH_05"
+;.segment "HIGH_06"
+;.segment "HIGH_07"
+;.segment "HIGH_08"
+;.segment "HIGH_09"
+;.segment "HIGH_10"
+;.segment "HIGH_11"
+;.segment "HIGH_12"
+;.segment "HIGH_13"
+;.segment "HIGH_14"
+;.segment "HIGH_15"
+;.segment "HIGH_16"
+;.segment "HIGH_17"
+;.segment "HIGH_18"
+;.segment "HIGH_19"
+;.segment "HIGH_20"
+;.segment "HIGH_21"
+;.segment "HIGH_22"
+;.segment "HIGH_23"
+;.segment "HIGH_24"
+;.segment "HIGH_25"
+;.segment "HIGH_26"
+;.segment "HIGH_27"
+;.segment "HIGH_28"
+;.segment "HIGH_29"
+;.segment "HIGH_30"
