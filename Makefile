@@ -18,7 +18,7 @@ SOURCES = main.asm \
 default: $(CHRUTIL) bin/ bin/parallax.nes
 
 clean:
-	-rm bin/*
+	-rm bin/* *.ids.asm *.chr
 
 bin/:
 	mkdir bin
