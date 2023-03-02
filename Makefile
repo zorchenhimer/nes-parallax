@@ -20,6 +20,9 @@ default: $(CHRUTIL) bin/ bin/parallax.nes
 clean:
 	-rm bin/* *.ids.asm *.chr
 
+cleanall: clean
+	-rm *.bmp
+
 bin/:
 	mkdir bin
 
@@ -37,6 +40,27 @@ tiles_bot.chr tiles_bot.ids.asm: tiles_bot.bmp
 
 sprites.chr: scene-sprites.bmp
 	$(CHRUTIL) -o $@ $^ --remove-duplicates --remove-empty
+
+tiles_top.bmp: scene-layered.aseprite
+	aseprite -b $^ \
+		--layer Background \
+		--layer clouds \
+		--crop 0,0,512,112 \
+		--save-as $@
+
+tiles_bot.bmp: scene-layered.aseprite
+	aseprite -b $^ \
+		--layer Background \
+		--layer mountains-a \
+		--layer mountains-b \
+		--crop 0,113,512,128 \
+		--save-as $@
+
+scene-sprites.bmp: scene-layered.aseprite
+	aseprite -b $^ \
+		--layer Background \
+		--layer sprites \
+		--save-as $@
 
 $(CHRUTIL):
 	$(MAKE) -C go-nes/ bin/chrutil
